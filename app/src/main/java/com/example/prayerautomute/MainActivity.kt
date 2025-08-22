@@ -1,6 +1,7 @@
 package com.example.prayerautomute
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,499 +11,281 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import com.example.prayerautomute.ui.theme.PrayerAutoMuteTheme
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
+import com.example.prayerautomute.ui.theme.PrayerAutoMuteTheme
+import com.example.prayerautomute.util.MuteStatusManager
 import com.example.prayerautomute.viewmodel.PrayerAutoMuteViewModel
-import java.text.SimpleDateFormat
-import java.util.*
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
-    private val requestPermissionLauncher = registerForActivityResult(
+    private val viewModel: PrayerAutoMuteViewModel by viewModels()
+    private lateinit var muteStatusManager: MuteStatusManager
+
+    // Permission launchers
+    private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        // Handle permission result
-    }
+    ) { /* Handle result if needed */ }
+
+    private val requestDndPermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* Handle result if needed */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        requestPermissions()
+        muteStatusManager = MuteStatusManager.getInstance(this)
+        checkAndRequestPermissions()
 
         setContent {
             PrayerAutoMuteTheme {
-                PrayerAutoMuteApp()
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    PrayerAutoMuteScreen(
+                        viewModel = viewModel,
+                        muteStatusManager = muteStatusManager
+                    )
+                }
             }
         }
     }
 
-    private fun requestPermissions() {
+    private fun checkAndRequestPermissions() {
+        // Check notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
                     this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            if (!notificationManager.isNotificationPolicyAccessGranted) {
-                val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                startActivity(intent)
-            }
+        // Check Do Not Disturb permission
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            !notificationManager.isNotificationPolicyAccessGranted) {
+            val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+            requestDndPermission.launch(intent)
         }
     }
 }
 
-
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PrayerAutoMuteApp(
-    viewModel: PrayerAutoMuteViewModel = viewModel()
+fun PrayerAutoMuteScreen(
+    viewModel: PrayerAutoMuteViewModel,
+    muteStatusManager: MuteStatusManager
 ) {
-    val location by viewModel.location
-    val prayerTimes by viewModel.prayerTimes
+    val context = LocalContext.current
     val currentTime by viewModel.currentTime
     val nextPrayer by viewModel.nextPrayer
     val timeUntilNext by viewModel.timeUntilNext
     val isEnabled by viewModel.isEnabled
     val isMuted by viewModel.isMuted
-    val muteEndTime by viewModel.muteEndTime
+    val location by viewModel.location
 
-    var showLocationDialog by remember { mutableStateOf(false) }
-    var showTimeEditDialog by remember { mutableStateOf(false) }
-    var editingPrayerIndex by remember { mutableStateOf(0) }
-
+    // Start time updates and status monitoring
     LaunchedEffect(Unit) {
         viewModel.startTimeUpdates()
+    }
+
+    // Monitor mute status from SharedPreferences
+    LaunchedEffect(Unit) {
+        while (true) {
+            val currentlyMuted = muteStatusManager.isMuted
+            val endTime = muteStatusManager.muteEndTime
+
+            // Check if mute time has expired
+            if (currentlyMuted && endTime > 0 && System.currentTimeMillis() > endTime) {
+                muteStatusManager.clearMuteStatus()
+                viewModel.updateMuteStatus(false)
+            } else {
+                viewModel.updateMuteStatus(currentlyMuted)
+            }
+
+            delay(1000) // Check every second
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFFE3F2FD),
-                        Color(0xFFBBDEFB)
-                    )
-                )
-            )
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Header Card
+        // Current time display
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = Color(0xFF1976D2)
-            )
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Prayer Mute",
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "Auto-mute during prayer times",
-                            fontSize = 14.sp,
-                            color = Color.White.copy(alpha = 0.8f)
-                        )
-                    }
-                    Icon(
-                        imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
+                Text(
+                    text = "Current Time",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = currentTime,
+                    style = MaterialTheme.typography.headlineLarge
+                )
             }
         }
 
-        // Status Section
+        // Location display
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Auto-mute",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Switch(
-                        checked = isEnabled,
-                        onCheckedChange = { viewModel.toggleEnabled() }
-                    )
-                }
+                Text(
+                    text = "Location",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = "${location.city}, ${location.country}",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if (isMuted) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFF3E0)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.VolumeOff,
-                                        contentDescription = null,
-                                        tint = Color(0xFFFF9800),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Phone is muted",
-                                        fontWeight = FontWeight.Medium,
-                                        color = Color(0xFFFF9800)
-                                    )
-                                }
-                                muteEndTime?.let {
-                                    val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-                                    Text(
-                                        text = "Will unmute at ${sdf.format(it)}",
-                                        fontSize = 12.sp,
-                                        color = Color(0xFFFF9800)
-                                    )
-                                }
-                            }
-                            TextButton(onClick = { viewModel.unmutePhone() }) {
-                                Text("Unmute")
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-
+        // Next prayer display
+        nextPrayer?.let { prayer ->
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = currentTime,
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1976D2)
+                        text = "Next Prayer",
+                        style = MaterialTheme.typography.titleMedium
                     )
-                    val sdf = SimpleDateFormat("EEEE, MMMM dd, yyyy", Locale.getDefault())
                     Text(
-                        text = sdf.format(Date()),
-                        fontSize = 14.sp,
-                        color = Color.Gray
+                        text = "${prayer.name} - ${prayer.time}",
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        text = "In $timeUntilNext",
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
             }
         }
 
-        // Location Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .clickable { showLocationDialog = true }
+        // Status indicators
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.LocationOn,
-                        contentDescription = null,
-                        tint = Color.Gray,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "${location.city}, ${location.country}",
-                        fontSize = 14.sp
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Default.Edit,
-                    contentDescription = null,
-                    tint = Color.Gray,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-
-        // Next Prayer Card
-        nextPrayer?.let { next ->
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isEnabled)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
             ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        text = "Next Prayer",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
+                    Text("Auto Mute")
+                    Text(if (isEnabled) "ON" else "OFF")
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isMuted)
+                        MaterialTheme.colorScheme.errorContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Phone Status")
+                    Text(if (isMuted) "MUTED" else "NORMAL")
+                }
+            }
+        }
+
+        // Countdown timer when muted
+        if (isMuted) {
+            val endTime = muteStatusManager.muteEndTime
+            if (endTime > 0) {
+                val remainingTime = (endTime - System.currentTimeMillis()) / 1000
+                if (remainingTime > 0) {
                     Card(
+                        modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFE8F5E8)
+                            containerColor = MaterialTheme.colorScheme.errorContainer
                         )
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Column {
-                                Text(
-                                    text = next.name,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF2E7D32)
-                                )
-                                Text(
-                                    text = next.time,
-                                    color = Color(0xFF2E7D32)
-                                )
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = "in",
-                                    fontSize = 12.sp,
-                                    color = Color(0xFF2E7D32)
-                                )
-                                Text(
-                                    text = timeUntilNext,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2E7D32)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Prayer Times Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .weight(1f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Today's Prayer Times",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = null,
-                        tint = Color.Gray,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable {
-                                editingPrayerIndex = 0
-                                showTimeEditDialog = true
-                            }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                LazyColumn {
-                    items(prayerTimes.withIndex().toList()) { (index, prayer) ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clickable {
-                                    editingPrayerIndex = index
-                                    showTimeEditDialog = true
-                                },
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFFAFAFA)
+                            Text("Time Remaining")
+                            Text(
+                                text = "${remainingTime}s",
+                                style = MaterialTheme.typography.headlineMedium
                             )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = prayer.name,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = prayer.time,
-                                    color = Color.Gray
-                                )
-                            }
                         }
                     }
                 }
             }
         }
 
-        // Test Button
-        Button(
-            onClick = { viewModel.mutePhone() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFE0E0E0),
-                contentColor = Color.Black
-            )
+        // Control buttons
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Test Mute (20 minutes)")
-        }
-    }
-
-    // Dialogs
-    if (showLocationDialog) {
-        var city by remember { mutableStateOf(location.city) }
-        var country by remember { mutableStateOf(location.country) }
-
-        AlertDialog(
-            onDismissRequest = { showLocationDialog = false },
-            title = { Text("Edit Location") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = city,
-                        onValueChange = { city = it },
-                        label = { Text("City") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = country,
-                        onValueChange = { country = it },
-                        label = { Text("Country") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.updateLocation(city, country)
-                        showLocationDialog = false
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLocationDialog = false }) {
-                    Text("Cancel")
-                }
+            Button(
+                onClick = { viewModel.toggleEnabled() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isEnabled) "Disable Auto Mute" else "Enable Auto Mute")
             }
-        )
-    }
 
-    if (showTimeEditDialog) {
-        var time by remember { mutableStateOf(prayerTimes[editingPrayerIndex].time) }
+            Button(
+                onClick = { viewModel.testMutePhone(context) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isMuted
+            ) {
+                Text("Test Mute (1 minute)")
+            }
 
-        AlertDialog(
-            onDismissRequest = { showTimeEditDialog = false },
-            title = { Text("Edit ${prayerTimes[editingPrayerIndex].name} Time") },
-            text = {
-                OutlinedTextField(
-                    value = time,
-                    onValueChange = { time = it },
-                    label = { Text("Time (HH:MM)") },
+            if (isMuted) {
+                Button(
+                    onClick = { viewModel.unmutePhone(context) },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("12:30") }
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.updatePrayerTime(editingPrayerIndex, time)
-                        showTimeEditDialog = false
-                    }
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
                 ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTimeEditDialog = false }) {
-                    Text("Cancel")
+                    Text("Unmute Now")
                 }
             }
-        )
+        }
     }
 }

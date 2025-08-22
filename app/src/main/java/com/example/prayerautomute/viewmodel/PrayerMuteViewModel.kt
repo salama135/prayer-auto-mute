@@ -1,10 +1,13 @@
 package com.example.prayerautomute.viewmodel
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import com.example.prayerautomute.data.Location
 import com.example.prayerautomute.data.PrayerTime
+import com.example.prayerautomute.service.MuteService
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -42,8 +45,8 @@ class PrayerAutoMuteViewModel : ViewModel() {
     private val _muteEndTime = mutableStateOf<Date?>(null)
     val muteEndTime: State<Date?> = _muteEndTime
 
-    private val isDST = true // set this depending on your region/date
-    private val dstOffsetMinutes = if (isDST) 60 else 0 // +1 hour if DST
+    private val isDST = true
+    private val dstOffsetMinutes = if (isDST) 60 else 0
 
     init {
         updateCurrentTime()
@@ -56,7 +59,6 @@ class PrayerAutoMuteViewModel : ViewModel() {
         var hour = timeParts[0].toInt()
         var minute = timeParts[1].toInt()
 
-        // Apply manual DST offset
         if (minute >= 60) {
             hour += minute / 60
             minute %= 60
@@ -105,10 +107,8 @@ class PrayerAutoMuteViewModel : ViewModel() {
             }
         }
 
-        // If none are left today, pick tomorrow’s first prayer
         _nextPrayer.value = _prayerTimes.value.first().copy(isNext = true)
     }
-
 
     fun toggleEnabled() {
         _isEnabled.value = !_isEnabled.value
@@ -125,16 +125,36 @@ class PrayerAutoMuteViewModel : ViewModel() {
         findNextPrayer()
     }
 
-    fun mutePhone() {
+    // Updated method to use background service
+    fun testMutePhone(context: Context) {
         _isMuted.value = true
         val calendar = Calendar.getInstance()
-        calendar.add(Calendar.MINUTE, 20)
+        calendar.add(Calendar.MINUTE, 1)
         _muteEndTime.value = calendar.time
+
+        // Start the background service
+        val intent = Intent(context, MuteService::class.java)
+        intent.action = MuteService.ACTION_START_MUTE
+        intent.putExtra(MuteService.EXTRA_DURATION_MINUTES, 5)
+        context.startForegroundService(intent)
     }
 
-    fun unmutePhone() {
+    fun unmutePhone(context: Context) {
         _isMuted.value = false
         _muteEndTime.value = null
+
+        // Stop the background service
+        val intent = Intent(context, MuteService::class.java)
+        intent.action = MuteService.ACTION_STOP_MUTE
+        context.startService(intent)
+    }
+
+    // Method to update UI when service reports status changes
+    fun updateMuteStatus(isMuted: Boolean) {
+        _isMuted.value = isMuted
+        if (!isMuted) {
+            _muteEndTime.value = null
+        }
     }
 
     suspend fun startTimeUpdates() {
