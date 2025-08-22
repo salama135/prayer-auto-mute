@@ -1,1 +1,1 @@
-# -prayer-auto-mute
+# prayer-auto-mute
