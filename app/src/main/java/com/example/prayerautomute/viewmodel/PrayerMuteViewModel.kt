@@ -7,7 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import com.example.prayerautomute.data.Location
 import com.example.prayerautomute.data.PrayerTime
+import com.example.prayerautomute.receiver.PrayerAlarmReceiver
 import com.example.prayerautomute.service.MuteService
+import com.example.prayerautomute.util.PrayerAlarmManager
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -41,6 +43,12 @@ class PrayerAutoMuteViewModel : ViewModel() {
 
     private val _isMuted = mutableStateOf(false)
     val isMuted: State<Boolean> = _isMuted
+    
+    private val _alarmsScheduled = mutableStateOf(false)
+    val alarmsScheduled: State<Boolean> = _alarmsScheduled
+    
+    // Prayer alarm manager will be initialized when needed
+    private var prayerAlarmManager: PrayerAlarmManager? = null
 
     private val _muteEndTime = mutableStateOf<Date?>(null)
     val muteEndTime: State<Date?> = _muteEndTime
@@ -110,19 +118,36 @@ class PrayerAutoMuteViewModel : ViewModel() {
         _nextPrayer.value = _prayerTimes.value.first().copy(isNext = true)
     }
 
-    fun toggleEnabled() {
+    fun toggleEnabled(context: Context) {
         _isEnabled.value = !_isEnabled.value
+        
+        if (_isEnabled.value) {
+            // Schedule prayer alarms when enabled
+            scheduleAllPrayerAlarms(context)
+        } else {
+            // Cancel prayer alarms when disabled
+            cancelAllPrayerAlarms(context)
+        }
+        
+        // Save the alarm state for persistence across reboots
+        val receiver = PrayerAlarmReceiver()
+        receiver.saveAlarmsEnabledState(context, _isEnabled.value)
     }
 
     fun updateLocation(city: String, country: String) {
         _location.value = Location(city, country)
     }
 
-    fun updatePrayerTime(index: Int, time: String) {
+    fun updatePrayerTime(index: Int, time: String, context: Context) {
         val updatedList = _prayerTimes.value.toMutableList()
         updatedList[index] = updatedList[index].copy(time = time)
         _prayerTimes.value = updatedList
         findNextPrayer()
+        
+        // If alarms are scheduled, update the specific prayer alarm
+        if (_alarmsScheduled.value) {
+            updatePrayerAlarm(index, context)
+        }
     }
 
     // Updated method to use background service
@@ -137,6 +162,61 @@ class PrayerAutoMuteViewModel : ViewModel() {
         intent.action = MuteService.ACTION_START_MUTE
         intent.putExtra(MuteService.EXTRA_DURATION_MINUTES, 5)
         context.startForegroundService(intent)
+    }
+    
+    /**
+     * Schedule alarms for all prayer times.
+     */
+    fun scheduleAllPrayerAlarms(context: Context, muteDuration: Int = 20) {
+        if (prayerAlarmManager == null) {
+            prayerAlarmManager = PrayerAlarmManager(context)
+        }
+        
+        prayerAlarmManager?.scheduleAllPrayerAlarms(_prayerTimes.value, muteDuration)
+        _alarmsScheduled.value = true
+        
+        // Save the alarm state for persistence across reboots
+        val receiver = PrayerAlarmReceiver()
+        receiver.saveAlarmsEnabledState(context, true)
+    }
+    
+    /**
+     * Cancel all prayer alarms.
+     */
+    fun cancelAllPrayerAlarms(context: Context) {
+        if (prayerAlarmManager == null) {
+            prayerAlarmManager = PrayerAlarmManager(context)
+        }
+        
+        prayerAlarmManager?.cancelAllPrayerAlarms()
+        _alarmsScheduled.value = false
+        
+        // Save the alarm state for persistence across reboots
+        val receiver = PrayerAlarmReceiver()
+        receiver.saveAlarmsEnabledState(context, false)
+    }
+    
+    /**
+     * Update a specific prayer alarm after time change.
+     */
+    private fun updatePrayerAlarm(index: Int, context: Context) {
+        if (prayerAlarmManager == null) {
+            prayerAlarmManager = PrayerAlarmManager(context)
+        }
+        
+        val prayer = _prayerTimes.value[index]
+        val requestCode = when (index) {
+            0 -> PrayerAlarmManager.REQUEST_CODE_FAJR
+            1 -> PrayerAlarmManager.REQUEST_CODE_DHUHR
+            2 -> PrayerAlarmManager.REQUEST_CODE_ASR
+            3 -> PrayerAlarmManager.REQUEST_CODE_MAGHRIB
+            4 -> PrayerAlarmManager.REQUEST_CODE_ISHA
+            else -> return
+        }
+        
+        // Cancel existing alarm and schedule new one
+        prayerAlarmManager?.cancelPrayerAlarm(requestCode)
+        prayerAlarmManager?.schedulePrayerAlarm(prayer, requestCode)
     }
 
     fun unmutePhone(context: Context) {
